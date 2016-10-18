@@ -1,3 +1,5 @@
+package mathml
+
 import scala.xml._
 import scala.xml.transform._
 
@@ -17,19 +19,21 @@ case object CARET extends Token
 case object OPENPAREN extends Token
 case object CLOSEPAREN extends Token
 
-sealed trait MathMLExpr
-final case class Const(a: Double) extends MathMLExpr
-final case class Var(name: String) extends MathMLExpr
-final case class Add(a: MathMLExpr, b: MathMLExpr) extends MathMLExpr
-final case class Sub(a: MathMLExpr, b: MathMLExpr) extends MathMLExpr
-final case class Mul(a: MathMLExpr, b: MathMLExpr) extends MathMLExpr
-final case class Div(a: MathMLExpr, b: MathMLExpr) extends MathMLExpr
-final case class Pow(a: MathMLExpr, b: MathMLExpr) extends MathMLExpr
+sealed trait MathMLExprOp[A]
+final case class Const(a: Double) extends MathMLExprOp[Double]
+final case class Var(name: String) extends MathMLExprOp[Double]
+final case class Add(a: Double, b: Double) extends MathMLExprOp[Double]
+final case class Sub(a: Double, b: Double) extends MathMLExprOp[Double]
+final case class Mul(a: Double, b: Double) extends MathMLExprOp[Double]
+final case class Div(a: Double, b: Double) extends MathMLExprOp[Double]
+final case class Pow(a: Double, b: Double) extends MathMLExprOp[Double]
 
+// Free applicative DSL
+import cats._
 import cats.free.Free
-//type MathMLExpr[T] = Free[MathMLExprT, T]
-//def liftExpr[T](expr: MathMLExprT[T]): MathMLExpr[Double] =
-//  liftF[MathMLExprA, T](expr)
+import cats.free.Free.liftF
+
+import cats.implicits._
 
 trait Env {
   def get(name: String): Double
@@ -39,9 +43,24 @@ case class MapEnv(env: Map[String, Double]) extends Env {
   def get(name: String): Double = env.lift(name).get
 }
 
-object AstTransformer {
+package object MathMLDSL {
+  type MathMLExpr[A] = Free[MathMLExprOp, A]
+  
+  def const(a: Double): MathMLExpr[Double] = liftF(Const(a))
+  def variable(name: String): MathMLExpr[Double] = liftF(Var(name))
+  def add(a: Double, b: Double): MathMLExpr[Double] = liftF(Add(a, b))
+  def sub(a: Double, b: Double): MathMLExpr[Double] = liftF(Sub(a, b))
+  def mul(a: Double, b: Double): MathMLExpr[Double] = liftF(Mul(a, b))
+  def div(a: Double, b: Double): MathMLExpr[Double] = liftF(Div(a, b))
+  def pow(a: Double, b: Double): MathMLExpr[Double] = liftF(Pow(a, b))
+}
 
-  def transform(elem: Elem): MathMLExpr = {
+object AstTransformer {
+  import MathMLDSL._
+
+  // Free Applicative defs
+  // External API
+  def parseMathML(elem: Elem): MathMLExpr[Double] = {
     require(elem.label == "math")
 
     println(s"before: $elem")
@@ -64,19 +83,18 @@ object AstTransformer {
     ast.get
   }
 
-  def identifiers(expr: MathMLExpr): Set[String] = expr match {
-    case Add(a, b) => identifiers(a) ++ identifiers(b)
-    case Sub(a, b) => identifiers(a) ++ identifiers(b)
-    case Mul(a, b) => identifiers(a) ++ identifiers(b)
-    case Div(a, b) => identifiers(a) ++ identifiers(b)
-    case Pow(a, b) => identifiers(a) ++ identifiers(b)
-    case Var(a) => Set(a)
-    case _ => Set.empty
-  }
+  //def identifiers[T](expr: MathMLExpr[T]): Set[String] = expr match {
+  //  case Add(a, b) => identifiers(a) ++ identifiers(b)
+  //  case Sub(a, b) => identifiers(a) ++ identifiers(b)
+  //  case Mul(a, b) => identifiers(a) ++ identifiers(b)
+  //  case Div(a, b) => identifiers(a) ++ identifiers(b)
+  //  case Pow(a, b) => identifiers(a) ++ identifiers(b)
+  //  case Var(a) => Set(a)
+  //  case _ => Set.empty
+  //}
 
 
-  //def toFree[F](expr: MathMLExpr): Free[F, Double]
-  def eval(expr: MathMLExpr, env: Env): Double = ???
+  def eval[T](expr: MathMLExpr[T], env: Env): T = ???
 
   private def lex(input: Seq[Elem]): Seq[Token] =
     input.map {
@@ -96,9 +114,9 @@ object MRowToParens extends RewriteRule {
   override def transform(n: Node): Seq[Node] = n match {
     case <mrow>{children @ _*}</mrow> =>
       //println(s"mrow child $children")
-        (<mo>(</mo> +:
-        children) :+
-        <mo>)</mo>
+      (<mo>(</mo> +:
+      children) :+
+      <mo>)</mo>
     case other => other
   }
 }
@@ -165,6 +183,7 @@ object SimplifyTransformer extends RuleTransformer(
   ExplicitOps)
 
 object MathMLExprParser extends Parsers {
+  import MathMLDSL._
   override type Elem = Token
 
   class MathMLExprReader(tokens: Seq[Token]) extends Reader[Token] {
@@ -174,7 +193,7 @@ object MathMLExprParser extends Parsers {
     override def rest: Reader[Token] = new MathMLExprReader(tokens.tail)
   }
 
-  def apply(tokens: Seq[Token]): Try[MathMLExpr] = {
+  def apply(tokens: Seq[Token]): Try[MathMLExpr[Double]] = {
     val reader = new MathMLExprReader(tokens)
     expr(reader) match {
       case NoSuccess(msg, next) => scala.util.Failure(new java.lang.Error(s"${next.pos.line} ${next.pos.column}"))
@@ -182,31 +201,63 @@ object MathMLExprParser extends Parsers {
     }
   }
   // Grammer #10 from http://math.purduecal.edu/~rlkraft/cs31600-2012/chapter03/syntax-examples.html 
-  lazy val expr: Parser[MathMLExpr] =
+  lazy val expr: Parser[MathMLExpr[Double]] =
     (term ~ (PLUS | MINUS) ~ term) ^^ {
-      case t1 ~ PLUS ~ t2 => Add(t1, t2)
-      case t1 ~ MINUS ~ t2 => Sub(t1, t2)
+      case t1 ~ PLUS ~ t2 => binOp(t1, t2) {
+        case (t1, t2) => add(t1, t2)
+      }
+      case t1 ~ MINUS ~ t2 => binOp(t1, t2) {
+        case (t1, t2) => sub(t1, t2)
+      }
     } | term
 
-  lazy val term: Parser[MathMLExpr] =
+  lazy val term: Parser[MathMLExpr[Double]] =
     (factor ~ (STAR | SLASH) ~ factor) ^^ {
-      case t ~ STAR ~ f => Mul(t, f)
-      case t ~ SLASH ~ f => Div(t, f)
+      case t ~ STAR ~ f => binOp(t, f) {
+        case (t, f) => mul(t, f)
+      }
+      case t ~ SLASH ~ f => binOp(t, f) {
+        case (t, f) => div(t, f)
+      }
     } | factor
 
-  lazy val factor: Parser[MathMLExpr] =
+  lazy val factor: Parser[MathMLExpr[Double]] =
     (base ~ CARET ~ exponent) ^^ {
-      case b ~ _ ~ e => Pow(b, e)
+      case b ~ _ ~ e =>
+        binOp(b, e) {
+          case (b: Double, e: Double) => pow(b, e)
+        }
     } | base
 
-  lazy val base: Parser[MathMLExpr] =
+    def binOp[F[_], A, B, C](fa: F[A], fb: F[B])(f: ((A, B)) => F[C])(implicit F: cats.Cartesian[F], M: cats.FlatMap[F]): F[C] =
+      F.product(fa, fb).flatMap(f)
+
+  lazy val base: Parser[MathMLExpr[Double]] =
     (OPENPAREN ~> expr <~ CLOSEPAREN) | number | identifier
 
-  lazy val exponent: Parser[MathMLExpr] = base
+  lazy val exponent: Parser[MathMLExpr[Double]] = base
 
-  lazy val number: Parser[Const] =
-    accept("number", { case NUMBER(n) => Const(n) })
+  lazy val number: Parser[MathMLExpr[Double]] =
+    accept("number", { case NUMBER(n) => const(n) })
 
-  lazy val identifier: Parser[MathMLExpr] =
-    accept("identifier", { case IDENTIFIER(s) => Var(s) })
+  lazy val identifier: Parser[MathMLExpr[Double]] =
+    accept("identifier", { case IDENTIFIER(s) => variable(s) })
 }
+
+object Compiler {
+  import cats.~>
+  def impure[F[_]](env: Map[String, Double])(implicit F: Monad[F]): MathMLExprOp ~> F =
+    new (MathMLExprOp ~> F) {
+      def apply[A](fa: MathMLExprOp[A]): F[A] =
+        fa match {
+          case Const(a) => F.pure(a)
+          case Var(a) => F.pure(env.lift(a).get)
+          case Add(a, b) => F.pure(a + b)
+          case Sub(a, b) => F.pure(a - b)
+          case Mul(a, b) => F.pure(a * b)
+          case Div(a, b) => F.pure(a / b)
+          case Pow(a, b) => F.pure(Math.pow(a, b))
+        }
+    }
+}
+
