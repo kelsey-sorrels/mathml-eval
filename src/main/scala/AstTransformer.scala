@@ -30,11 +30,8 @@ final case class Pow(a: Double, b: Double) extends MathMLExprOp[Double]
 
 // Free applicative DSL
 import cats._
-import cats.free.FreeApplicative
-import cats.free.FreeApplicative.lift
 import cats.free.Free
 import cats.free.Free.liftF
-
 import cats.implicits._
 
 trait Env {
@@ -48,6 +45,7 @@ case class MapEnv(env: Map[String, Double]) extends Env {
 package object MathMLDSL {
   type MathMLExpr[A] = Free[MathMLExprOp, A]
   
+  // External API
   def const(a: Double): MathMLExpr[Double] = liftF(Const(a))
   def variable(name: String): MathMLExpr[Double] = liftF(Var(name))
   def add(a: Double, b: Double): MathMLExpr[Double] = liftF(Add(a, b))
@@ -60,13 +58,9 @@ package object MathMLDSL {
 object AstTransformer {
   import MathMLDSL._
 
-  // Free Applicative defs
-  // External API
-  def parseMathML(elem: Elem): MathMLExpr[Double] = {
+  def parseMathML(elem: Elem): Try[(Set[String], MathMLExpr[Double])] = {
     require(elem.label == "math")
 
-    println(s"before: $elem")
-    
     val flattened =
       (ExpandTransformer
         andThen SimplifyTransformer)(elem)
@@ -74,29 +68,25 @@ object AstTransformer {
       .map { _.asInstanceOf[Elem] }
 
     val tokens = lex(flattened)
-
-    println(s"tokens: $tokens")
+    // Require an equal number of open and close parens
+    require(tokens.filter { _ == OPENPAREN }.size
+      == tokens.filter { _ == CLOSEPAREN }.size)
 
     val ast = MathMLExprParser(tokens)
 
-    
-    println(s"after: $ast")
-
-    ast.get
+    ast.map { ast =>
+      val vars = tokens.foldLeft[Set[String]](Set()) { (names, e) =>
+        e match {
+          case IDENTIFIER(name) => names + name
+          case _ => names
+        }
+      }
+      (vars, ast)
+    }
   }
 
-  //def identifiers[T](expr: MathMLExpr[T]): Set[String] = expr match {
-  //  case Add(a, b) => identifiers(a) ++ identifiers(b)
-  //  case Sub(a, b) => identifiers(a) ++ identifiers(b)
-  //  case Mul(a, b) => identifiers(a) ++ identifiers(b)
-  //  case Div(a, b) => identifiers(a) ++ identifiers(b)
-  //  case Pow(a, b) => identifiers(a) ++ identifiers(b)
-  //  case Var(a) => Set(a)
-  //  case _ => Set.empty
-  //}
-
-
-  def eval[T](expr: MathMLExpr[T], env: Env): T = ???
+  def eval[T[_]: Monad: RecursiveTailRecM](expr: MathMLExpr[Double], env: Map[String, Double]): T[Double] =
+    expr.foldMap(Compiler.impure[T](env))
 
   private def lex(input: Seq[Elem]): Seq[Token] =
     input.map {
@@ -116,9 +106,7 @@ object MRowToParens extends RewriteRule {
   override def transform(n: Node): Seq[Node] = n match {
     case <mrow>{children @ _*}</mrow> =>
       //println(s"mrow child $children")
-      (<mo>(</mo> +:
-      children) :+
-      <mo>)</mo>
+      <mo>(</mo> +: children :+ <mo>)</mo>
     case other => other
   }
 }
@@ -181,7 +169,7 @@ object ExpandTransformer extends RuleTransformer(
   PowInfix)
 object SimplifyTransformer extends RuleTransformer(
   MRowToParens,
-  SimplifyParens,
+  //SimplifyParens,
   ExplicitOps)
 
 object MathMLExprParser extends Parsers {
@@ -214,7 +202,7 @@ object MathMLExprParser extends Parsers {
       case t1 ~ MINUS ~ t2 =>
         C.product(t1, t2).flatMap {
           case (t1, t2) => sub(t1, t2)
-        }
+      }
     } | term
 
   lazy val term: Parser[MathMLExpr[Double]] =

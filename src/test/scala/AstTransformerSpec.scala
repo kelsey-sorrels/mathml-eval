@@ -9,17 +9,33 @@ import scala.xml._
 import cats._
 import cats.implicits._
 
-class ExampleSpec extends WordSpec with Matchers {
+class ExampleSpec extends WordSpec with Matchers with TryValues {
 
-  //"A MathML expression should be evaluable" should {
-  //  "pop values in last-in-first-out order" in {
-  //    val mathml = """<math xmlns="http://www.w3.org/1998/Math/MathML"><mrow><mrow><mi mathcolor="#443399">a</mi><mo>&#x2062;</mo><mfrac><mrow><mrow><mrow><mi mathcolor="#443399">800nm</mi><mo>-</mo><mrow><mrow><mi mathcolor="#443399">a</mi><mo>&#xB7;</mo><mi mathcolor="#443399">670nm</mi></mrow><mo>-</mo><mi mathcolor="#443399">b</mi></mrow></mrow></mrow></mrow><mrow><mrow><mrow><mo>(</mo><mrow><mrow><mi mathcolor="#443399">800nm</mi><mo>+</mo><mrow><mrow><mi mathcolor="#443399">670nm</mi><mo>-</mo><mrow><mi mathcolor="#443399">a</mi><mo>&#xB7;</mo><mi mathcolor="#443399">b</mi></mrow></mrow><mo>+</mo><mrow><mi mathcolor="#443399">X</mi><mo>&#x2062;</mo><mrow><mo>(</mo><mrow><mrow><mn>1</mn><mo>+</mo><msup><mi mathcolor="#443399">a</mi><mn>2</mn></msup></mrow></mrow><mo>)</mo></mrow></mrow></mrow></mrow></mrow><mo>)</mo></mrow></mrow></mrow></mfrac></mrow></mrow></math>"""
-  //    val xml = XML.loadString(mathml)
-  //    val expr = AstTransformer.transform(xml)
-  //    AstTransformer.identifiers(expr) should not be empty
-  //  }
-  //}
-  //
+  val ndviMathML = """<math xmlns="http://www.w3.org/1998/Math/MathML"><mrow><mfrac><mrow><mrow><mrow><mi mathcolor="#443399">MIR</mi><mo>-</mo><mi mathcolor="#443399">NIR</mi></mrow></mrow></mrow><mrow><mrow><mrow><mi mathcolor="#443399">MIR</mi><mo>+</mo><mi mathcolor="#443399">NIR</mi></mrow></mrow></mrow></mfrac></mrow></math>"""
+
+  "A MathML expression" should {
+    "be parseable" in {
+      val xml = XML.loadString(ndviMathML)
+      val result = AstTransformer.parseMathML(xml)
+      result should be a 'success
+    }
+    "find identifiers" in {
+      val xml = XML.loadString(ndviMathML)
+      val result = AstTransformer.parseMathML(xml)
+      result should be a 'success
+      result.get._1 shouldBe Set("NIR", "MIR")
+    }
+    "be evaluable" in {
+      val xml = XML.loadString(ndviMathML)
+      val result = AstTransformer.parseMathML(xml)
+      result should be a 'success
+      val env = Map("NIR" -> 0.5,
+                    "MIR" -> 0.5)
+      AstTransformer.eval(result.get._2, env) shouldBe Success(0.0)
+
+    }
+  }
+  
   "A MathMLExprEvaluator" should {
     "evaluate constants" in {
       val result = MathMLExprParser(Seq(NUMBER(1)))
