@@ -30,6 +30,8 @@ final case class Pow(a: Double, b: Double) extends MathMLExprOp[Double]
 
 // Free applicative DSL
 import cats._
+import cats.free.FreeApplicative
+import cats.free.FreeApplicative.lift
 import cats.free.Free
 import cats.free.Free.liftF
 
@@ -186,6 +188,8 @@ object MathMLExprParser extends Parsers {
   import MathMLDSL._
   override type Elem = Token
 
+  val C = implicitly[cats.Cartesian[MathMLExpr]]
+
   class MathMLExprReader(tokens: Seq[Token]) extends Reader[Token] {
     override def first: Token = tokens.head
     override def atEnd: Boolean = tokens.isEmpty
@@ -203,34 +207,35 @@ object MathMLExprParser extends Parsers {
   // Grammer #10 from http://math.purduecal.edu/~rlkraft/cs31600-2012/chapter03/syntax-examples.html 
   lazy val expr: Parser[MathMLExpr[Double]] =
     (term ~ (PLUS | MINUS) ~ term) ^^ {
-      case t1 ~ PLUS ~ t2 => binOp(t1, t2) {
-        case (t1, t2) => add(t1, t2)
-      }
-      case t1 ~ MINUS ~ t2 => binOp(t1, t2) {
-        case (t1, t2) => sub(t1, t2)
-      }
+      case t1 ~ PLUS ~ t2 =>
+        C.product(t1, t2).flatMap {
+          case (t1, t2) => add(t1, t2)
+        }
+      case t1 ~ MINUS ~ t2 =>
+        C.product(t1, t2).flatMap {
+          case (t1, t2) => sub(t1, t2)
+        }
     } | term
 
   lazy val term: Parser[MathMLExpr[Double]] =
     (factor ~ (STAR | SLASH) ~ factor) ^^ {
-      case t ~ STAR ~ f => binOp(t, f) {
+      case t ~ STAR ~ f =>
+        C.product(t, f).flatMap {
         case (t, f) => mul(t, f)
       }
-      case t ~ SLASH ~ f => binOp(t, f) {
-        case (t, f) => div(t, f)
-      }
+      case t ~ SLASH ~ f =>
+        C.product(t, f).flatMap {
+          case (t, f) => div(t, f)
+        }
     } | factor
 
   lazy val factor: Parser[MathMLExpr[Double]] =
     (base ~ CARET ~ exponent) ^^ {
       case b ~ _ ~ e =>
-        binOp(b, e) {
-          case (b: Double, e: Double) => pow(b, e)
+        C.product(b, e).flatMap {
+          case (b, e) => pow(b, e)
         }
     } | base
-
-    def binOp[F[_], A, B, C](fa: F[A], fb: F[B])(f: ((A, B)) => F[C])(implicit F: cats.Cartesian[F], M: cats.FlatMap[F]): F[C] =
-      F.product(fa, fb).flatMap(f)
 
   lazy val base: Parser[MathMLExpr[Double]] =
     (OPENPAREN ~> expr <~ CLOSEPAREN) | number | identifier
